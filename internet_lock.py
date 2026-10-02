@@ -17,6 +17,10 @@ RULE_NAME = "Block Internet"
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".internet_lock_config.json")
 PS_FLAGS = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 
+IS_WINDOWS = sys.platform == "win32" or os.name == "nt"
+IS_MACOS = sys.platform == "darwin"
+IS_LINUX = sys.platform.startswith("linux")
+
 if sys.platform == "win32":
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -90,13 +94,30 @@ def run_elevated_hidden(executable: str, params: str) -> bool:
 
 
 def elevate_process():
-    if os.name != "nt":
-        return
-    params = " ".join([f'"{arg}"' for arg in sys.argv])
-    if hasattr(ctypes, "windll"):
+    if IS_WINDOWS and hasattr(ctypes, "windll"):
+        params = " ".join([f'"{arg}"' for arg in sys.argv])
         ret = ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, params, None, 1)
         if ret > 32:
             sys.exit(0)
+    elif IS_MACOS:
+        import shlex
+        args = [sys.executable] + sys.argv
+        cmd_str = " ".join(shlex.quote(a) for a in args)
+        escaped_cmd = cmd_str.replace('\\', '\\\\').replace('"', '\\"')
+        apple_script = f'do shell script "{escaped_cmd}" with administrator privileges'
+        try:
+            subprocess.Popen(["osascript", "-e", apple_script])
+            sys.exit(0)
+        except Exception:
+            pass
+    elif IS_LINUX:
+        import shutil
+        if shutil.which("pkexec"):
+            try:
+                subprocess.Popen(["pkexec", sys.executable] + sys.argv)
+                sys.exit(0)
+            except Exception:
+                pass
 
 
 def hash_password(password: str, salt: bytes = None) -> tuple[str, str]:
@@ -154,9 +175,62 @@ def run_ps_fast(command: str) -> bool:
         return run_elevated_hidden("powershell.exe", params)
 
 
-def check_firewall_locked() -> bool:
-    if os.name != "nt":
+def run_command_elevated(cmd, shell: bool = False) -> bool:
+    if is_admin():
+        try:
+            res = subprocess.run(cmd, shell=shell, capture_output=True, creationflags=PS_FLAGS)
+            return res.returncode == 0
+        except Exception:
+            return False
+
+    if IS_WINDOWS:
+        if isinstance(cmd, list):
+            cmd_str = " ".join(cmd)
+        else:
+            cmd_str = cmd
+        return run_ps_fast(cmd_str)
+
+    elif IS_MACOS:
+        if isinstance(cmd, list):
+            import shlex
+            cmd_str = " ".join(shlex.quote(c) for c in cmd)
+        else:
+            cmd_str = cmd
+        escaped_cmd = cmd_str.replace('\\', '\\\\').replace('"', '\\"')
+        apple_script = f'do shell script "{escaped_cmd}" with administrator privileges'
+        try:
+            res = subprocess.run(["osascript", "-e", apple_script], capture_output=True)
+            return res.returncode == 0
+        except Exception:
+            return False
+
+    elif IS_LINUX:
+        import shutil
+        if isinstance(cmd, list):
+            args = cmd
+        else:
+            args = ["sh", "-c", cmd]
+
+        if shutil.which("pkexec"):
+            try:
+                res = subprocess.run(["pkexec"] + args, capture_output=True)
+                return res.returncode == 0
+            except Exception:
+                pass
+        if shutil.which("sudo"):
+            try:
+                res = subprocess.run(["sudo", "-n"] + args, capture_output=True)
+                if res.returncode == 0:
+                    return True
+                res = subprocess.run(["sudo"] + args, capture_output=True)
+                return res.returncode == 0
+            except Exception:
+                pass
         return False
+
+
+# --- Windows Firewall Handlers ---
+def windows_check_locked() -> bool:
     cmd = [
         "powershell.exe",
         "-NoProfile",
@@ -172,9 +246,7 @@ def check_firewall_locked() -> bool:
         return False
 
 
-def apply_firewall_lock() -> bool:
-    if os.name != "nt":
-        return True
+def windows_apply_lock() -> bool:
     cmd = (
         f'New-NetFirewallRule -Name "{RULE_NAME}" '
         f'-DisplayName "Block Internet access" '
@@ -185,11 +257,114 @@ def apply_firewall_lock() -> bool:
     return run_ps_fast(cmd)
 
 
-def remove_firewall_lock() -> bool:
-    if os.name != "nt":
-        return True
+def windows_remove_lock() -> bool:
     cmd = f'Remove-NetFirewallRule -Name "{RULE_NAME}" -ErrorAction SilentlyContinue'
     return run_ps_fast(cmd)
+
+
+# --- Linux iptables Handlers ---
+def linux_check_locked() -> bool:
+    try:
+        res = subprocess.run(["iptables", "-C", "OUTPUT", "-m", "comment", "--comment", RULE_NAME, "-j", "DROP"], capture_output=True)
+        return res.returncode == 0
+    except Exception:
+        return False
+
+
+def linux_apply_lock() -> bool:
+    # 1. Ensure loopback is allowed so local applications communicate normally
+    chk_lo = subprocess.run(["iptables", "-C", "OUTPUT", "-o", "lo", "-j", "ACCEPT"], capture_output=True)
+    if chk_lo.returncode != 0:
+        run_command_elevated(["iptables", "-I", "OUTPUT", "1", "-o", "lo", "-j", "ACCEPT"])
+
+    # 2. Add tagged outbound blocking rule
+    ok = run_command_elevated(["iptables", "-I", "OUTPUT", "2", "-m", "comment", "--comment", RULE_NAME, "-j", "DROP"])
+
+    # 3. Handle IPv6 if available
+    import shutil
+    if shutil.which("ip6tables"):
+        subprocess.run(["ip6tables", "-C", "OUTPUT", "-o", "lo", "-j", "ACCEPT"], capture_output=True)
+        run_command_elevated(["ip6tables", "-I", "OUTPUT", "1", "-o", "lo", "-j", "ACCEPT"])
+        run_command_elevated(["ip6tables", "-I", "OUTPUT", "2", "-m", "comment", "--comment", RULE_NAME, "-j", "DROP"])
+    return ok
+
+
+def linux_remove_lock() -> bool:
+    # Remove only rules created by this application
+    for _ in range(5):
+        chk = subprocess.run(["iptables", "-C", "OUTPUT", "-m", "comment", "--comment", RULE_NAME, "-j", "DROP"], capture_output=True)
+        if chk.returncode == 0:
+            if not run_command_elevated(["iptables", "-D", "OUTPUT", "-m", "comment", "--comment", RULE_NAME, "-j", "DROP"]):
+                break
+        else:
+            break
+
+    import shutil
+    if shutil.which("ip6tables"):
+        for _ in range(5):
+            chk6 = subprocess.run(["ip6tables", "-C", "OUTPUT", "-m", "comment", "--comment", RULE_NAME, "-j", "DROP"], capture_output=True)
+            if chk6.returncode == 0:
+                run_command_elevated(["ip6tables", "-D", "OUTPUT", "-m", "comment", "--comment", RULE_NAME, "-j", "DROP"])
+            else:
+                break
+    return True
+
+
+# --- macOS pfctl Handlers (Isolated Anchor & Safe Lifecycle) ---
+MACOS_ANCHOR = "com.internetlock"
+
+
+def macos_check_locked() -> bool:
+    try:
+        res = subprocess.run(["pfctl", "-a", MACOS_ANCHOR, "-sr"], capture_output=True, text=True)
+        return "block" in res.stdout
+    except Exception:
+        return False
+
+
+def macos_apply_lock() -> bool:
+    # Load drop rule into isolated anchor with loopback preserved, then activate PF
+    rules = "set skip on lo0\\nblock drop out all\\n"
+    cmd = f'printf "{rules}" | pfctl -a {MACOS_ANCHOR} -f - && pfctl -e'
+    return run_command_elevated(cmd, shell=True)
+
+
+def macos_remove_lock() -> bool:
+    # Flush ONLY the isolated anchor. We intentionally do NOT disable global PF,
+    # preventing disruption to other system firewall rules or software.
+    cmd = f'pfctl -a {MACOS_ANCHOR} -F all'
+    return run_command_elevated(cmd, shell=True)
+
+
+# --- Cross-Platform Unified Firewall Interface ---
+def check_firewall_locked() -> bool:
+    if IS_WINDOWS:
+        return windows_check_locked()
+    elif IS_MACOS:
+        return macos_check_locked()
+    elif IS_LINUX:
+        return linux_check_locked()
+    return False
+
+
+def apply_firewall_lock() -> bool:
+    if IS_WINDOWS:
+        return windows_apply_lock()
+    elif IS_MACOS:
+        return macos_apply_lock()
+    elif IS_LINUX:
+        return linux_apply_lock()
+    return False
+
+
+def remove_firewall_lock() -> bool:
+    if IS_WINDOWS:
+        return windows_remove_lock()
+    elif IS_MACOS:
+        return macos_remove_lock()
+    elif IS_LINUX:
+        return linux_remove_lock()
+    return False
 
 
 class UnlockModal(tk.Toplevel):

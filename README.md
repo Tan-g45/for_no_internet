@@ -1,16 +1,13 @@
 # Internet Lock
 
-A lightweight Windows utility to block and restore system-wide internet access with password protection. It manages Windows Defender Firewall outbound rules directly and provides both a desktop graphical interface and command-line options.
+A lightweight cross-platform utility to block and restore system-wide internet access with password protection. It natively manages firewall and packet filter rules across **Windows**, **Linux**, and **macOS**, providing both a desktop graphical interface and command-line options.
 
-## Requirements
+## Supported Operating Systems & Requirements
 
-- Windows 10 or Windows 11
-- Python 3.8 or higher
-- Administrator privileges (required by Windows to create or delete firewall rules)
-
-This application uses Python standard library modules only (`tkinter`, `ctypes`, `hashlib`, `subprocess`, `json`, `base64`, `threading`). No third-party packages or `pip` dependencies are needed.
-
-Note: When installing Python on Windows, make sure the "tcl/tk and IDLE" option was selected (enabled by default in standard Python installers).
+- **Windows:** Windows 10 / 11 (uses Windows Defender Firewall via PowerShell, elevates via UAC)
+- **Linux:** Ubuntu, Debian, Fedora, Arch, Mint, etc. (uses `iptables` with loopback preserved, elevates via `pkexec` / `sudo`)
+- **macOS:** macOS Monterey, Ventura, Sonoma, Sequoia (uses `pfctl` isolated anchor `com.internetlock`, elevates via native macOS admin dialog)
+- **Python:** Python 3.8 or higher (standard library only: `tkinter`, `hashlib`, `subprocess`, `json`, `base64`, `threading`). No `pip` dependencies required.
 
 ## Installation
 
