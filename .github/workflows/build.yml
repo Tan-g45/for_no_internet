@@ -1,0 +1,146 @@
+name: Build Executables (Manual Only)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os-name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            os-name: Windows
+            binary-name: internet_lock.exe
+            artifact-name: internet_lock-windows.exe
+          - os: ubuntu-latest
+            os-name: Linux
+            binary-name: internet_lock
+            artifact-name: internet_lock-linux
+          - os: macos-latest
+            os-name: macOS
+            binary-name: internet_lock
+            artifact-name: internet_lock-macos
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install system dependencies (Linux Tkinter)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-tk
+
+      - name: Install PyInstaller
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller
+
+      - name: Build standalone executable with PyInstaller
+        shell: bash
+        run: |
+          pyinstaller --onefile --noconsole --name internet_lock internet_lock.py
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp dist/internet_lock.exe dist/${{ matrix.artifact-name }}
+          else
+            chmod +x dist/internet_lock
+            cp dist/internet_lock dist/${{ matrix.artifact-name }}
+          fi
+
+      - name: Upload platform build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact-name }}
+          path: dist/${{ matrix.artifact-name }}
+          retention-days: 1
+
+  package-and-release:
+    name: Package Single ZIP & Update Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts-temp
+
+      - name: Create unified package structure
+        run: |
+          mkdir -p release-pkg/windows release-pkg/linux release-pkg/macos
+          
+          # Find and copy binaries to respective folders
+          find artifacts-temp -name "internet_lock-windows.exe" -exec cp {} release-pkg/windows/internet_lock.exe \;
+          find artifacts-temp -name "internet_lock-linux" -exec cp {} release-pkg/linux/internet_lock \;
+          find artifacts-temp -name "internet_lock-macos" -exec cp {} release-pkg/macos/internet_lock \;
+          
+          # Ensure execution permissions for UNIX binaries
+          chmod +x release-pkg/linux/internet_lock release-pkg/macos/internet_lock
+          
+          # Also provide direct executables in the root of the ZIP
+          cp release-pkg/windows/internet_lock.exe release-pkg/internet_lock-windows.exe
+          cp release-pkg/linux/internet_lock release-pkg/internet_lock-linux
+          cp release-pkg/macos/internet_lock release-pkg/internet_lock-macos
+          
+          # Include README
+          cp README.md release-pkg/
+          
+          # Create single all-in-one ZIP archive
+          cd release-pkg
+          zip -r ../internet_lock-all-platforms.zip .
+          cd ..
+          
+          # Individual ZIPs for single-OS downloads
+          (cd release-pkg/windows && zip ../../internet_lock-windows.zip internet_lock.exe)
+          (cd release-pkg/linux && zip ../../internet_lock-linux.zip internet_lock)
+          (cd release-pkg/macos && zip ../../internet_lock-macos.zip internet_lock)
+
+      - name: Upload All-in-One ZIP as Workflow Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: internet_lock-all-platforms
+          path: internet_lock-all-platforms.zip
+          retention-days: 30
+
+      - name: Delete old release and tag (keep only latest build)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete latest --cleanup-tag --yes || true
+          git push --delete origin latest || true
+
+      - name: Publish new Release with latest ZIP
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create latest \
+            internet_lock-all-platforms.zip \
+            internet_lock-windows.zip \
+            internet_lock-linux.zip \
+            internet_lock-macos.zip \
+            --title "Latest Build (All Platforms)" \
+            --notes "### 🔒 Internet Lock - Multi-Platform Executables
+
+          This build is packaged in a single \`.zip\` archive. Unzip it to run on any supported operating system:
+
+          #### 📦 Downloads:
+          - **All Platforms (Single ZIP)**: \`internet_lock-all-platforms.zip\`
+            - Windows: \`internet_lock.exe\`
+            - Linux: \`internet_lock\`
+            - macOS: \`internet_lock\`
+          - Individual downloads are also available below for each specific OS.
+
+          *(Note: Previous builds are automatically deleted so this release always contains the latest build).* "

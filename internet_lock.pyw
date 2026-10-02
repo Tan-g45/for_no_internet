@@ -8,7 +8,10 @@ import threading
 import subprocess
 import tkinter as tk
 from tkinter import simpledialog, messagebox
-from ctypes import wintypes
+try:
+    from ctypes import wintypes
+except ImportError:
+    wintypes = None
 
 RULE_NAME = "Block Internet"
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".internet_lock_config.json")
@@ -22,30 +25,36 @@ if sys.platform == "win32":
         pass
 
 
-class SHELLEXECUTEINFO(ctypes.Structure):
-    _fields_ = [
-        ("cbSize", wintypes.DWORD),
-        ("fMask", wintypes.ULONG),
-        ("hwnd", wintypes.HWND),
-        ("lpVerb", wintypes.LPCWSTR),
-        ("lpFile", wintypes.LPCWSTR),
-        ("lpParameters", wintypes.LPCWSTR),
-        ("lpDirectory", wintypes.LPCWSTR),
-        ("nShow", ctypes.c_int),
-        ("hInstApp", wintypes.HINSTANCE),
-        ("lpIDList", wintypes.LPVOID),
-        ("lpClass", wintypes.LPCWSTR),
-        ("hkeyClass", wintypes.HKEY),
-        ("dwHotKey", wintypes.DWORD),
-        ("hIconOrMonitor", wintypes.HANDLE),
-        ("hProcess", wintypes.HANDLE)
-    ]
+if os.name == "nt" and wintypes is not None:
+    class SHELLEXECUTEINFO(ctypes.Structure):
+        _fields_ = [
+            ("cbSize", wintypes.DWORD),
+            ("fMask", wintypes.ULONG),
+            ("hwnd", wintypes.HWND),
+            ("lpVerb", wintypes.LPCWSTR),
+            ("lpFile", wintypes.LPCWSTR),
+            ("lpParameters", wintypes.LPCWSTR),
+            ("lpDirectory", wintypes.LPCWSTR),
+            ("nShow", ctypes.c_int),
+            ("hInstApp", wintypes.HINSTANCE),
+            ("lpIDList", wintypes.LPVOID),
+            ("lpClass", wintypes.LPCWSTR),
+            ("hkeyClass", wintypes.HKEY),
+            ("dwHotKey", wintypes.DWORD),
+            ("hIconOrMonitor", wintypes.HANDLE),
+            ("hProcess", wintypes.HANDLE)
+        ]
+else:
+    class SHELLEXECUTEINFO:
+        pass
 
 SEE_MASK_NOCLOSEPROCESS = 0x00000040
 SW_HIDE = 0
 
 
 def is_admin() -> bool:
+    if os.name != "nt":
+        return os.geteuid() == 0 if hasattr(os, "geteuid") else False
     try:
         return bool(ctypes.windll.shell32.IsUserAnAdmin())
     except Exception:
@@ -53,6 +62,12 @@ def is_admin() -> bool:
 
 
 def run_elevated_hidden(executable: str, params: str) -> bool:
+    if os.name != "nt":
+        try:
+            res = subprocess.run([executable] + params.split(), capture_output=True)
+            return res.returncode == 0
+        except Exception:
+            return False
     sei = SHELLEXECUTEINFO()
     sei.cbSize = ctypes.sizeof(SHELLEXECUTEINFO)
     sei.fMask = SEE_MASK_NOCLOSEPROCESS
@@ -63,7 +78,7 @@ def run_elevated_hidden(executable: str, params: str) -> bool:
     sei.lpDirectory = None
     sei.nShow = SW_HIDE
 
-    if ctypes.windll.shell32.ShellExecuteExW(ctypes.byref(sei)):
+    if hasattr(ctypes, "windll") and ctypes.windll.shell32.ShellExecuteExW(ctypes.byref(sei)):
         if sei.hProcess:
             ctypes.windll.kernel32.WaitForSingleObject(sei.hProcess, 0xFFFFFFFF)
             code = wintypes.DWORD()
@@ -75,10 +90,13 @@ def run_elevated_hidden(executable: str, params: str) -> bool:
 
 
 def elevate_process():
+    if os.name != "nt":
+        return
     params = " ".join([f'"{arg}"' for arg in sys.argv])
-    ret = ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, params, None, 1)
-    if ret > 32:
-        sys.exit(0)
+    if hasattr(ctypes, "windll"):
+        ret = ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, params, None, 1)
+        if ret > 32:
+            sys.exit(0)
 
 
 def hash_password(password: str, salt: bytes = None) -> tuple[str, str]:
@@ -137,6 +155,8 @@ def run_ps_fast(command: str) -> bool:
 
 
 def check_firewall_locked() -> bool:
+    if os.name != "nt":
+        return False
     cmd = [
         "powershell.exe",
         "-NoProfile",
@@ -153,6 +173,8 @@ def check_firewall_locked() -> bool:
 
 
 def apply_firewall_lock() -> bool:
+    if os.name != "nt":
+        return True
     cmd = (
         f'New-NetFirewallRule -Name "{RULE_NAME}" '
         f'-DisplayName "Block Internet access" '
@@ -164,6 +186,8 @@ def apply_firewall_lock() -> bool:
 
 
 def remove_firewall_lock() -> bool:
+    if os.name != "nt":
+        return True
     cmd = f'Remove-NetFirewallRule -Name "{RULE_NAME}" -ErrorAction SilentlyContinue'
     return run_ps_fast(cmd)
 

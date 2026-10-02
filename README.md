@@ -17,8 +17,8 @@ Note: When installing Python on Windows, make sure the "tcl/tk and IDLE" option 
 Clone or download this repository to your local machine:
 
 ```bash
-git clone https://github.com/your-username/internet-lock.git
-cd internet-lock
+git clone https://github.com/Tan-g45/for_no_internet.git
+cd for_no_internet
 ```
 
 Verify that Python is installed and accessible in your command prompt:
@@ -122,3 +122,18 @@ Displays usage instructions for command-line arguments.
 - **Security:** Passwords are protected using PBKDF2-HMAC-SHA256 with 100,000 iterations and a per-install cryptographic salt. Plaintext passwords are never saved.
 - **Configuration:** Password hash and salt are stored locally in `.internet_lock_config.json`.
 - **Privilege Handling:** Commands requiring administrative access use Windows `ShellExecuteExW` with the `runas` verb to request elevation when needed.
+
+---
+
+## 📦 Standalone Executables & Automated Builds
+
+Pre-built binaries for **Windows (.exe)**, **Linux**, and **macOS** can be packaged together in a single `.zip` file:
+
+- **Manual Trigger**: The GitHub Actions workflow is set to run only on manual trigger (`workflow_dispatch`). It does not run automatically on code push.
+- **Single Download**: Generates `internet_lock-all-platforms.zip` containing ready-to-run executables for all platforms. Unzip and run immediately without needing Python installed.
+- **Always Latest**: Each manual run automatically deletes any previous release build and replaces it with the latest binaries.
+
+To trigger a build:
+1. Navigate to the **Actions** tab on GitHub.
+2. Select **Build Executables (Manual Only)**.
+3. Click **Run workflow**.
